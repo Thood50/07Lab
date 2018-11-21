@@ -110,7 +110,6 @@ function getYelp(request, response) {
 
   superagent.get(url).set('Authorization', `Bearer ${process.env.YELP_API_KEY}`)
     .then(result => {
-      console.log(result.body);
       const theBusiness = result.body.businesses.map(business => {
         return new Yelp(business);
       });
