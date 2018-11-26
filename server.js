@@ -26,6 +26,10 @@ app.get('/movies', getMovies);
 
 app.get('/yelp', getYelp);
 
+app.get('/trails', getTrails);
+
+app.get('/meetups', getMeetups);
+
 // Make sure the server is listening for requests
 app.listen(PORT, () => console.log(`Listening on ${PORT}`));
 
@@ -64,6 +68,26 @@ function Yelp(business) {
   this.image_url = business.image_url;
   this.rating = business.rating;
   this.price = business.price;
+}
+
+function Trails(route) {
+  this.name = route.name;
+  this.trail_url = route.url;
+  this.location = route.location;
+  this.length = route.length;
+  this.condition_date = route.conditionDate.match(/[0-9][0-9][0-9][0-9][-][0-9][0-9][-][0-9][0-9]/g);
+  this.condition_time = route.conditionDate.match(/[0-9][0-9][:][0-9][0-9][:][0-9][0-9]/g);
+  this.conditions = route.conditionStatus;
+  this.stars = route.stars;
+  this.star_votes = route.starVotes;
+  this.summary = route.summary;
+}
+
+function Meetup(meet) {
+  this.link = meet.link;
+  this.name = meet.urlkey;
+  this.host = meet.name;
+  this.creation_date = meet.updated;
 }
 
 
@@ -116,4 +140,47 @@ function getYelp(request, response) {
       response.send(theBusiness);
     })
     .catch(error => handleError(error, response));
+}
+
+function getTrails(request, response) {
+  const url = `https://www.hikingproject.com/data/get-trails?lat=${request.query.data.latitude}&lon=${request.query.data.longitude}&key=${process.env.TRAILS_API_KEY}`
+
+  superagent.get(url)
+    .then(result => {
+      const trails = result.body.trails.map(trail => {
+        return new Trails(trail);
+      })
+      response.send(trails);
+    })
+    .catch(error => handleError(error, response));
+}
+
+function getMeetups(request, response) {
+  const url = `https://api.meetup.com/topics?search=tech&key=${process.env.MEETUP_API_KEY}`;
+
+  superagent.get(url)
+    .then(result => {
+      const meetup = result.body.results.map(meet => {
+        return new Meetup(meet);
+      })
+      console.log(meetup);
+      response.send(meetup);
+    })
+    .catch(error => handleError(error, response));
+}
+
+
+//Time Converter
+function timeConverter(UNIX_timestamp){
+  let a = new Date(UNIX_timestamp * 1000);
+  
+  let months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  // let year = a.getFullYear();
+  let month = months[a.getMonth()];
+  let date = a.getDate();
+  let hour = a.getHours();
+  let min = a.getMinutes();
+  let sec = a.getSeconds();
+  let time = date + ' ' + month + ' ' + '2018' + ' ' + hour + ':' + min + ':' + sec ;
+  return time;
 }
