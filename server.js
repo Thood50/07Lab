@@ -3,6 +3,7 @@
 // Application Dependencies
 const express = require('express');
 const superagent = require('superagent');
+const pg = require('pg');
 const cors = require('cors');
 
 // Load environment variables from .env file
@@ -13,25 +14,109 @@ const app = express();
 const PORT = process.env.PORT;
 app.use(cors());
 
+// Database Setup
+const client = new pg.Client(process.env.DATABASE_URL);
+client.connect();
+client.on('error', err => console.error(err));
+
 // API Routes
-app.get('/location', (request, response) => {
-  searchToLatLong(request.query.data)
-    .then(location => response.send(location))
-    .catch(error => handleError(error, response));
-})
-
+app.get('/location', getLocation);
 app.get('/weather', getWeather);
-
-app.get('/movies', getMovies);
-
-app.get('/yelp', getYelp);
-
-app.get('/trails', getTrails);
-
-app.get('/meetups', getMeetups);
 
 // Make sure the server is listening for requests
 app.listen(PORT, () => console.log(`Listening on ${PORT}`));
+
+// ++++++++++++ MODELS ++++++++++++++++
+
+// Location model
+function Location(query, res) {
+  this.tableName = 'locations';
+  this.search_query = query;
+  this.formatted_query = res.body.results[0].formatted_address;
+  this.latitude = res.body.results[0].geometry.location.lat;
+  this.longitude = res.body.results[0].geometry.location.lng;
+  this.created_at = Date.now();
+}
+
+Location.lookupLocation = (location) => {
+  const SQL = `SELECT * FROM locations WHERE search_query=$1;`;
+  const values = [location.query];
+
+  return client.query(SQL, values)
+    .then(result => {
+      if (result.rowCount > 0) {
+        console.log('We have a match for location');
+        location.cacheHit(result);
+      } else {
+        console.log('We do not have a location match');
+        location.cacheMiss();
+      }
+    })
+    .catch(console.error);
+}
+
+// Location.prototype.save = function() and so on
+Location.prototype = {
+  save: function () {
+    const SQL = `INSERT INTO locations (search_query, formatted_query, latitude, longitude) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id;`;
+    const values = [this.search_query, this.formatted_query, this.latitude, this.longitude];
+
+    return client.query(SQL, values)
+      .then(result => {
+        this.id = result.rows[0].id;
+        return this;
+      });
+  }
+};
+
+// Weather model
+function Weather(day) {
+  this.tableName = 'weathers';
+  this.forecast = day.summary;
+  this.time = new Date(day.time * 1000).toString().slice(0, 15);
+  this.created_at = Date.now();
+}
+
+Weather.tableName = 'weathers';
+Weather.lookup = lookup;
+Weather.deleteByLocationId = deleteByLocationId;
+
+Weather.prototype = {
+  save: function (location_id) {
+    const SQL = `INSERT INTO ${this.tableName} (forecast, time, created_at, location_id) VALUES ($1, $2, $3, $4);`;
+    const values = [this.forecast, this.time, this.created_at, location_id];
+
+    client.query(SQL, values);
+  }
+}
+
+// ++++++++++++ HELPERS +++++++++++++++
+// These functions are assigned to properties on the models
+
+// Checks to see if there is DB data for a given location
+function lookup(options) {
+  const SQL = `SELECT * FROM ${options.tableName} WHERE location_id=$1;`;
+  const values = [options.location];
+
+  client.query(SQL, values)
+    .then(result => {
+      if (result.rowCount > 0) {
+        options.cacheHit(result);
+      } else {
+        options.cacheMiss();
+      }
+    })
+    .catch(error => handleError(error));
+}
+
+// Clear the DB data for a location if it is stale
+function deleteByLocationId(table, city) {
+  const SQL = `DELETE from ${table} WHERE location_id=${city};`;
+  return client.query(SQL);
+}
+
+
+// ++++++++++++ HANDLERS ++++++++++++++++
 
 // Error handler
 function handleError(err, res) {
@@ -39,148 +124,62 @@ function handleError(err, res) {
   if (res) res.status(500).send('Sorry, something went wrong');
 }
 
-// Models
-function Location(query, res) {
-  this.search_query = query;
-  this.formatted_query = res.body.results[0].formatted_address;
-  this.latitude = res.body.results[0].geometry.location.lat;
-  this.longitude = res.body.results[0].geometry.location.lng;
+// Location handler
+function getLocation(request, response) {
+  Location.lookupLocation({
+    tableName: Location.tableName,
+
+    query: request.query.data,
+
+    cacheHit: function (result) {
+      console.log(result.rows[0]);
+      response.send(result.rows[0]);
+    },
+
+    cacheMiss: function () {
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${this.query}&key=${process.env.GEOCODE_API_KEY}`;
+
+      return superagent.get(url)
+        .then(result => {
+          const location = new Location(this.query, result);
+          location.save()
+            .then(location => response.send(location));
+        })
+        .catch(error => handleError(error));
+    }
+  })
 }
 
-function Weather(day) {
-  this.forecast = day.summary;
-  this.time = new Date(day.time * 1000).toString().slice(0, 15);
-}
-
-function Movies(movie) {
-  this.title = movie.title;
-  this.released_on = movie.release_date;
-  this.total_votes = movie.vote_count;
-  this.average_votes = movie.vote_average;
-  this.popularity = movie.popularity;
-  this.image_url = `https://image.tmdb.org/t/p/original${movie.poster_path}`;
-  this.overiew = movie.overview;
-}
-
-function Yelp(business) {
-  this.name = business.name;
-  this.url = business.url;
-  this.image_url = business.image_url;
-  this.rating = business.rating;
-  this.price = business.price;
-}
-
-function Trails(route) {
-  this.name = route.name;
-  this.trail_url = route.url;
-  this.location = route.location;
-  this.length = route.length;
-  this.condition_date = route.conditionDate.match(/[0-9][0-9][0-9][0-9][-][0-9][0-9][-][0-9][0-9]/g);
-  this.condition_time = route.conditionDate.match(/[0-9][0-9][:][0-9][0-9][:][0-9][0-9]/g);
-  this.conditions = route.conditionStatus;
-  this.stars = route.stars;
-  this.star_votes = route.starVotes;
-  this.summary = route.summary;
-}
-
-function Meetup(meet) {
-  this.link = meet.link;
-  this.name = meet.urlkey;
-  this.host = meet.name;
-  this.creation_date = meet.updated;
-}
-
-
-// Helper Functions
-function searchToLatLong(query) {
-  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${query}&key=${process.env.GEOCODE_API_KEY}`;
-
-  return superagent.get(url)
-    .then(res => {
-      return new Location(query, res);
-    })
-    .catch(error => handleError(error));
-}
-
+// Weather handler
 function getWeather(request, response) {
-  const url = `https://api.darksky.net/forecast/${process.env.WEATHER_API_KEY}/${request.query.data.latitude},${request.query.data.longitude}`;
+  Weather.lookup({
+    tableName: Weather.tableName,
 
-  superagent.get(url)
-    .then(result => {
-      const weatherSummaries = result.body.daily.data.map(day => {
-        return new Weather(day);
-      });
+    location: request.query.data.id,
 
-      response.send(weatherSummaries);
-    })
-    .catch(error => handleError(error, response));
-}
+    cacheHit: function (result) {
+      let ageOfResultsInMinutes = (Date.now() - result.rows[0].created_at) / (1000 * 60);
+      if (ageOfResultsInMinutes > 30) {
+        Weather.deleteByLocationId(Weather.tableName, request.query.data.id);
+        this.cacheMiss();
+      } else {
+        response.send(result.rows);
+      }
+    },
 
-function getMovies(request, response) {
-  const url =`https://api.themoviedb.org/3/search/movie?api_key=${process.env.MOVIES_API_KEY}&language=en-US&query=${request.query.data.search_query}&page=1&include_adult=false`;
+    cacheMiss: function () {
+      const url = `https://api.darksky.net/forecast/${process.env.WEATHER_API_KEY}/${request.query.data.latitude},${request.query.data.longitude}`;
 
-  superagent.get(url)
-    .then(result => {
-      const movies = result.body.results.map(movie => {
-        return new Movies(movie);
-      });
-      response.send(movies);
-    })
-    .catch(error => handleError(error, response));
-}
-
-function getYelp(request, response) {
-  const url = `https://api.yelp.com/v3/businesses/search?latitude=${request.query.data.latitude}&longitude=${request.query.data.longitude}`;
-
-  superagent.get(url).set('Authorization', `Bearer ${process.env.YELP_API_KEY}`)
-    .then(result => {
-      const theBusiness = result.body.businesses.map(business => {
-        return new Yelp(business);
-      });
-      response.send(theBusiness);
-    })
-    .catch(error => handleError(error, response));
-}
-
-function getTrails(request, response) {
-  const url = `https://www.hikingproject.com/data/get-trails?lat=${request.query.data.latitude}&lon=${request.query.data.longitude}&key=${process.env.TRAILS_API_KEY}`
-
-  superagent.get(url)
-    .then(result => {
-      const trails = result.body.trails.map(trail => {
-        return new Trails(trail);
-      })
-      response.send(trails);
-    })
-    .catch(error => handleError(error, response));
-}
-
-function getMeetups(request, response) {
-  const url = `https://api.meetup.com/topics?search=tech&key=${process.env.MEETUP_API_KEY}`;
-
-  superagent.get(url)
-    .then(result => {
-      const meetup = result.body.results.map(meet => {
-        return new Meetup(meet);
-      })
-      console.log(meetup);
-      response.send(meetup);
-    })
-    .catch(error => handleError(error, response));
-}
-
-
-//Time Converter
-function timeConverter(UNIX_timestamp){
-  let a = new Date(UNIX_timestamp * 1000);
-  
-  let months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  // let year = a.getFullYear();
-  let month = months[a.getMonth()];
-  let date = a.getDate();
-  let hour = a.getHours();
-  let min = a.getMinutes();
-  let sec = a.getSeconds();
-  let time = date + ' ' + month + ' ' + '2018' + ' ' + hour + ':' + min + ':' + sec ;
-  return time;
+      return superagent.get(url)
+        .then(result => {
+          const weatherSummaries = result.body.daily.data.map(day => {
+            const summary = new Weather(day);
+            summary.save(request.query.data.id);
+            return summary;
+          });
+          response.send(weatherSummaries);
+        })
+        .catch(error => handleError(error, response));
+    }
+  })
 }
