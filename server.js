@@ -9,7 +9,7 @@ const app = express();
 const PORT = process.env.PORT;
 app.use(cors());
 
-//Database setup
+
 const client = new pg.Client(process.env.DATABASE_URL);
 client.connect();
 client.on('error', err => console.error(err));
@@ -29,7 +29,6 @@ app.get('/meetups', getMeetup);
 
 app.get('/trails', getTrails);
 
-//make sure the server is listening for requests.
 app.listen(PORT, () => console.log(`App is up on ${PORT}`));
 
 
